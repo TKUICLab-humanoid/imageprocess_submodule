@@ -6,7 +6,7 @@ TImageBase::TImageBase()
 {
     this->ImageSize = IMAGEHEIGHT*IMAGEWIDTH*3;
     this->bNewFlag = false;
-    this->tmpModelBuffer = new unsigned char[IMAGEHEIGHT*IMAGEWIDTH];
+    this->tmpModelBuffer = new unsigned char[IMAGEHEIGHT*IMAGEWIDTH]();
     for( int LabelCnt = 0; LabelCnt < 8 ; LabelCnt++ ){
         this->ObjectList.push_back( new TImageInfo() );//ÀxŠs€£ŠPÃCŠâªºª«¥ó®eŸ¹
     }
