@@ -5,9 +5,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include "tku_libs/TKU_tool.h"
+#include <ros/ros.h> 
 //include "../../../strategy/src/StrategyNameAndPath.h"
 using namespace std;
-
 
 struct ColorRange
 {
@@ -28,8 +28,8 @@ public:
     TdataUnit();
     ~TdataUnit();
     int strategyname;
-    void SaveColorRangeFile();
-    void LoadColorRangeFile();
+    void SaveColorRangeFile(std::string location);
+    void LoadColorRangeFile(std::string location);
     Tool *tool = new Tool();
     ColorRange** HSVColorRange;
 };

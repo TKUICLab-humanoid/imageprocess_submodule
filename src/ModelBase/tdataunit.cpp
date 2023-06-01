@@ -57,11 +57,13 @@ TdataUnit::~TdataUnit()
     delete [] this->HSVColorRange;
 }
 
-void TdataUnit::SaveColorRangeFile()
+void TdataUnit::SaveColorRangeFile(std::string location)
 {
     char path[200];
     strcpy(path, tool->getPackagePath("strategy").c_str());
-    strcat(path, "/ColorModelData.ini");
+    strcat(path, "/");
+    strcat(path, location.c_str());
+    strcat(path, "/Parameter/ColorModelData.ini");
     try
     {
 //        ofstream OutFile(sFileName.c_str());
@@ -96,15 +98,17 @@ void TdataUnit::SaveColorRangeFile()
     }
 }
 
-void TdataUnit::LoadColorRangeFile()
+void TdataUnit::LoadColorRangeFile(std::string location)
 {
-
     fstream fin;
     char line[100]; 
     char path[200];
     strcpy(path, tool->getPackagePath("strategy").c_str());
-    strcat(path, "/ColorModelData.ini");
-
+    printf("location:%s\n",location.c_str());
+    strcat(path, "/");
+    strcat(path, location.c_str());
+    strcat(path, "/Parameter/ColorModelData.ini");
+    printf("%s\n",path);
     fin.open(path, ios::in);
     //fin.open(("../../Parameter/Color_Model_Data/ColorModelData.ini"), ios::in);
     try
@@ -123,6 +127,7 @@ void TdataUnit::LoadColorRangeFile()
     }
     catch(exception e)
     {
+        printf("can't open");
     }
 }
 
