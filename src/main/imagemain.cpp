@@ -79,7 +79,7 @@ bool CallSaveHSVFunction(tku_msgs::SaveHSV::Request &req, tku_msgs::SaveHSV::Res
 {
     if(req.Save)
     {
-        DataUnit->SaveColorRangeFile();
+        DataUnit->SaveColorRangeFile(req.location);
         res.Already = true;
     }
 }
@@ -121,6 +121,11 @@ int main(int argc, char** argv)
     ros::NodeHandle nh;
     image_transport::ImageTransport it(nh);
 
+    std::string location;
+    nh.getParam("/location",location);
+    tku_msgs::SaveHSV::Request request;
+    request.location = location;
+
     Object_Publish = nh.advertise<tku_msgs::ObjectList>("/Object/List", 1);
     LabelModel_Publish = nh.advertise<tku_msgs::LabelModelObjectList>("/LabelModel/List", 1);
 
@@ -143,7 +148,8 @@ int main(int argc, char** argv)
     drawImageArray.clear();
     
     ModelUnit->HSV_BuildingTable();
-    DataUnit->LoadColorRangeFile();
+    printf("\nloadColor\n");
+    DataUnit->LoadColorRangeFile(location);
     ModelUnit->HSV_BuildingColorModel();
 
     ros::spinOnce();
