@@ -78,7 +78,8 @@ bool CallBuildFunction(tku_msgs::BuildModel::Request &req, tku_msgs::BuildModel:
 bool CallSaveHSVFunction(tku_msgs::SaveHSV::Request &req, tku_msgs::SaveHSV::Response &res)
 {
     if(req.Save)
-    {
+    {   
+        ROS_INFO("SAVE");
         DataUnit->SaveColorRangeFile(req.location);
         res.Already = true;
     }

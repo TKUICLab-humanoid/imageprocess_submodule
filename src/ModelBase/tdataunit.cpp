@@ -95,6 +95,7 @@ void TdataUnit::SaveColorRangeFile(std::string location)
     catch( exception e )
     {
     }
+    ROS_INFO("SavingColorModel");
 }
 
 void TdataUnit::LoadColorRangeFile(std::string location)
