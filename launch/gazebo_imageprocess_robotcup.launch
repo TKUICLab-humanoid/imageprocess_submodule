@@ -1,8 +1,0 @@
-<?xml version="1.0" ?>
-<launch>
-  <include file="$(find rosbridge_server)/launch/rosbridge_websocket.launch" />
-  <node pkg="web_video_server" name="web_video_server" type="web_video_server"/>
-  <node name="imageprocess" pkg="imageprocess" type="imageprocess" output="screen">
-    <remap from="/kidsize/camera/image_raw" to="/robot1/camera/image_raw"/>
-  </node>
-</launch>
