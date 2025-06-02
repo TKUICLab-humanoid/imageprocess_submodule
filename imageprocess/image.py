@@ -44,7 +44,7 @@ class ImageSubscriber(Node):
             "BlueLabel":    {"label": 2, "color": [128,   0, 128] },   # 紫
             "GreenLabel":   {"label": 3, "color": [  0,   0, 128] },   # 深藍
             "OrangeLabel":  {"label": 4, "color": [128,   0,   0] },   # 深紅
-            "RedLabel":     {"label": 5, "color": [  0, 255, 255] },   # 黃
+            "RedLabel":     {"label": 5, "color": [255, 255,   0] },   # 黃
             "YellowLabel":  {"label": 6, "color": [128, 128,   0] },   # 黃綠
             "WhiteLabel":   {"label": 7, "color": [  0, 255, 255] },   # 青綠
             "OthersLabel":  {"label": 8, "color": [255,   0, 128] },   # 紫粉
@@ -171,9 +171,6 @@ class ImageSubscriber(Node):
         return response
 
     def color_model_HSV_callback(self, msg):
-        self.get_logger().info(f"Received HSV Value: {msg}")
-
-        # 更新 `self.HSVColorRange` (原始存儲格式)
         self.HSVColorRange[self.select_color].HueMax = msg.hmax
         self.HSVColorRange[self.select_color].HueMin = msg.hmin
         self.HSVColorRange[self.select_color].SaturationMax = msg.smax
@@ -182,28 +179,15 @@ class ImageSubscriber(Node):
         self.HSVColorRange[self.select_color].BrightnessMin = msg.vmin
         self.lower = np.array([msg.hmin, msg.smin, msg.vmin], dtype=np.uint8)
         self.upper = np.array([msg.hmax, msg.smax, msg.vmax], dtype=np.uint8)
-        # self.HSV_BuildingTable(self.HSVColorRange)
-
-        # print(f"Updated computed HSV data for {self.select_color}: {self.HSVColorRange[self.select_color]}")
- 
-
 
     def image_callback(self, msg: Image):
         try:
-            # 1) ROS Image → OpenCV
             cv_img = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
-            # 2) Resize & HSV
             resized = cv2.resize(cv_img, (320, 240))
             hsv     = cv2.cvtColor(resized, cv2.COLOR_BGR2HSV)
-
-            # 3) 確認已經有 lower / upper
             if self.lower is None or self.upper is None:
                 return
             else:
-                # self.get_logger().info(f"Using HSV range: {self.lower} to {self.upper}")
-                # 4) 建立 HSV 色彩表    
-                # self.build_hsv_table(hsv, resized)
-                # 5) Publish 處理後的影像
                 self.build_hsv_table(hsv, resized)
                 self.build_all_hsv_table(hsv, resized)
                 # self.processed_image.publish(mask_msg)
@@ -212,20 +196,15 @@ class ImageSubscriber(Node):
             self.get_logger().error(f"Failed to process image: {e}")
 
     def build_hsv_table(self, hsv, resized):
-            """建立 HSV 色彩表"""
-            # 4) HSV 二值化，考慮 Hue 是否跨 0 度
             h_low, s_low, v_low = self.lower
             h_high, s_high, v_high = self.upper
-
             if h_low <= h_high:
-                # 一般情況
                 mask = cv2.inRange(
                     hsv,
                     (int(h_low), int(s_low), int(v_low)),
                     (int(h_high), int(s_high), int(v_high))
                 )
             else:
-                # 跨 0 度，分兩段再合併
                 mask1 = cv2.inRange(
                     hsv,
                     (0,        int(s_low), int(v_low)),
@@ -238,12 +217,10 @@ class ImageSubscriber(Node):
                 )
                 mask = cv2.bitwise_or(mask1, mask2)
 
-            # 5) 形态学处理
             kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
             mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN,  kernel, iterations=2)
             mask_msg = self.bridge.cv2_to_imgmsg(mask, encoding='mono8')
 
-            # 8) 彩色遮罩
             key = f"{self.select_color.capitalize()}Label"
             if key in self.color_labels:
                 b, g, r = self.color_labels[key]['color']
@@ -253,24 +230,10 @@ class ImageSubscriber(Node):
                 color_msg = self.bridge.cv2_to_imgmsg(colored_mask, encoding='bgr8')
                 self.processed_image.publish(color_msg)
 
-            # 9) Publish 帶框可視化影像
             vis_msg = self.bridge.cv2_to_imgmsg(resized, encoding='bgr8')
-            # self.build_image.publish(vis_msg)
             return vis_msg,mask_msg
     
     def build_all_hsv_table(self, hsv, resized):
-        """
-        「全部顏色二值化 + 彩色標記 + 物件資訊擷取」功能：
-        1. 依據 self.HSVColorRange 裡每個 ColorRange 物件做 inRange → morphology → 合併成 mask_all
-        2. 同時根據每個顏色範圍，將對應的像素在 color_mask 上塗上 self.color_labels 定義的 BGR 顏色
-        3. 在遍歷 mask_i 時對每個顏色執行輪廓檢測，收集 (bounding box, 面積, 質心) 等資訊
-        4. 回傳 (vis_all, mask_all, detections):
-            - vis_all: 彩色標記圖 (BGR8)，每個顏色範圍對應到 self.color_labels 的顏色
-            - mask_all: 單通道二值圖 (mono8)，所有顏色檢測到的區域都會是 255，其它為 0
-            - detections: dict，key 為各顏色 label，value 為 list of dict，每個 dict 包含該顏色這一張 mask_i 中
-                的所有獨立物件資訊 (bbox, area, centroid)
-        """
-
         h, w = hsv.shape[:2]
         total_mask = np.zeros((h, w), dtype=np.uint8)       # 純黑白二值化
         color_mask = np.zeros((h, w, 3), dtype=np.uint8)    # BGR 彩色輸出
@@ -278,7 +241,6 @@ class ImageSubscriber(Node):
         # 準備一個 dict 來存每個顏色下所有「偵測到的物件」資訊
         detections = { label: [] for label in self.HSVColorRange.keys() }
 
-        # 逐一遍歷各顏色
         for label, color_obj in self.HSVColorRange.items():
             h_low  = int(color_obj.HueMin)
             h_high = int(color_obj.HueMax)
@@ -287,13 +249,11 @@ class ImageSubscriber(Node):
             v_low  = int(color_obj.BrightnessMin)
             v_high = int(color_obj.BrightnessMax)
 
-            # 如果上下界全為 0，表示該顏色沒設定，跳過
             if (h_low == 0 and h_high == 0
                 and s_low == 0 and s_high == 0
                 and v_low == 0 and v_high == 0):
                 continue
 
-            # 1) 做 inRange → mask_i
             if h_low <= h_high:
                 mask_i = cv2.inRange(
                     hsv,
@@ -301,7 +261,6 @@ class ImageSubscriber(Node):
                     (h_high, s_high, v_high)
                 )
             else:
-                # Hue 跨 0 度，拆成兩段再合併
                 mask1 = cv2.inRange(
                     hsv,
                     (0,     s_low,  v_low),
@@ -314,14 +273,10 @@ class ImageSubscriber(Node):
                 )
                 mask_i = cv2.bitwise_or(mask1, mask2)
 
-            # 2) 形態學開運算去雜訊
             kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
             mask_i = cv2.morphologyEx(mask_i, cv2.MORPH_OPEN, kernel, iterations=2)
-
-            # 3) 合併到 total_mask
             total_mask = cv2.bitwise_or(total_mask, mask_i)
 
-            # 4) 「彩色標記」的部分，把該顏色的區域塗成指定 BGR
             label_key = label.capitalize() + "Label"
             if label_key in self.color_labels:
                 bgr_color = np.array(self.color_labels[label_key]["color"], dtype=np.uint8)
@@ -330,19 +285,13 @@ class ImageSubscriber(Node):
 
             color_mask[mask_i > 0] = bgr_color
 
-            # 5) 對當前這張 mask_i 做輪廓檢測，擷取各物件資訊
-            #    找出所有外部輪廓
             contours, _ = cv2.findContours(mask_i, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             for cnt in contours:
-                # 計算面積 (像素數)
                 area = cv2.contourArea(cnt)
-                # 忽略過小面積，可根據需求調整閾值
                 if area < 50:
                     continue
 
-                # 計算邊界框 (x, y, w, h)
                 x, y, w_box, h_box = cv2.boundingRect(cnt)
-                # 計算質心 (M["m10"]/M["m00"], M["m01"]/M["m00"])
                 M = cv2.moments(cnt)
                 if M["m00"] != 0:
                     cx = int(M["m10"] / M["m00"])
@@ -350,24 +299,27 @@ class ImageSubscriber(Node):
                 else:
                     cx, cy = x + w_box // 2, y + h_box // 2
 
-                # 把這個物件的資訊放到 detections[label] 清單中
                 detections[label].append({
                     "bbox":     (x, y, w_box, h_box),
                     "area":     float(area),
                     "centroid": (cx, cy),
-                    # 如有更多需求，可再加：輪廓點 (cnt.tolist()), 長寬比例, 椭圓拟合, ... 等
+                    "color":    bgr_color.tolist(),
+                    "label":    label,
+                    "mask":     mask_i[y:y+h_box, x:x+w_box].tolist(),  # 只保留當前物件的 mask
+                    "contour":  cnt.tolist(),  # 輪廓點
+                    "aspect_ratio": w_box / h_box if h_box > 0 else 0,  # 長寬比例
                 })
-            
 
-        # 6) 做最終的彩色可視化：只保留被任一顏色檢測到的部分
+        info_msg = String()
+        info_msg.data = json.dumps(detections)  # 將 dict 序列化成 JSON 字串
+        self.info_pub.publish(info_msg)
+
         vis_all = cv2.bitwise_and(color_mask, color_mask, mask=total_mask)
 
         # 7) 轉成 ROS Image Msg
         mask_all    = self.bridge.cv2_to_imgmsg(total_mask, encoding='mono8')
         vis_msg_all = self.bridge.cv2_to_imgmsg(vis_all,    encoding='bgr8')
         self.build_image.publish(vis_msg_all)
-        # 8) 回傳三樣東西：vis_all, mask_all, 以及各顏色的物件資訊
-        # return vis_msg_all, mask_all, detections
 
 
     ##############################  save hsv  #################################
