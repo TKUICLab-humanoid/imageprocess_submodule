@@ -4,7 +4,7 @@ from sensor_msgs.msg import Image
 import cv2
 from cv_bridge import CvBridge
 import numpy as np
-from tku_msgs.msg import Location,HSVValue
+from tku_msgs.msg import Location,HSVValue,DrawImage
 from tku_msgs.srv import HSVInfo,SaveHSV
 from imageprocess.dataunit import DataUnit
 import configparser
@@ -73,7 +73,13 @@ class Imageprocess(Node):
         #########################   color model HSV  #########################
         self.save_hsv = self.create_service(SaveHSV, '/SaveHSV', self.save_hsv_callback)
         #########################   color model HSV  #########################
-
+        self.draw_requests = []
+        self.draw_sub = self.create_subscription(
+            DrawImage,
+            '/draw_image',
+            self.draw_image_callback,
+            10
+        )
 
     def location_callback(self, msg):
         """讀取 HSV 參數，更新顏色範圍"""
