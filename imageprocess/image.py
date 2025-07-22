@@ -133,7 +133,7 @@ class ImageSubscriber(Node):
     def location_callback(self, loc):
         """讀取 location，並初始化 HSVColorRange"""
         print(f"Received location: {loc}")
-        self.path = f"/home/iclab/Desktop/towen/src/strategy/strategy/{loc}/Parameter/ColorModelData.ini"
+        self.path = f"/workspace/towen/src/strategy/strategy/{loc}/Parameter/ColorModelData.ini"
         print("path = ",self.path)
         # """讀取 HSV 參數，更新顏色範圍"""
         # print(f"Received location: {msg.data}")
@@ -172,6 +172,7 @@ class ImageSubscriber(Node):
                 else:
                     norm = raw 
                 updates[attr_name] = norm
+            print(updates)
 
             # 寫回 HSVColorRange
             if isinstance(target, dict):
@@ -186,7 +187,7 @@ class ImageSubscriber(Node):
         # print(self.HSVColorRange)  # Debug
         self.select_color = request.colorlabel
         color_data = self.HSVColorRange.get(request.colorlabel)
-        # print(f"Retrieved color_data: {color_data}")
+        print(f"Retrieved color_data: {color_data}")
 
         if color_data:
             response.hmin = int(color_data.HueMin) 
