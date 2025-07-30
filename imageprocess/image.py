@@ -65,11 +65,14 @@ class ImageSubscriber(Node):
         # )
         # self.subscription  # prevent unused variable warning
         self.subscription = self.create_subscription(
-            CompressedImage,
-            '/zed/zed_node/right/image_rect_color/compressed',  # 注意: “compressed” 后缀
+            # CompressedImage,
+            Image,
+            # '/zed/zed_node/right/image_rect_color/compressed',  # 注意: “compressed” 后缀
+            '/image_raw',
             self.image_callback,
             10,
         )
+        self.subscription
         self.processed_image = self.create_publisher(Image, 'processed_image', 10)
         self.build_image = self.create_publisher(Image, 'build_image', 10)
         self.mask_pub = self.create_publisher(Image, 'mask_image', 10)
@@ -214,10 +217,12 @@ class ImageSubscriber(Node):
         self.lower = np.array([msg.hmin, msg.smin, msg.vmin], dtype=np.uint8)
         self.upper = np.array([msg.hmax, msg.smax, msg.vmax], dtype=np.uint8)
 
-    def image_callback(self, msg: Image):
+    # def image_callback(self, msg: Image):
+    def image_callback(self, msg):
         try:
+            # self.get_logger().info(f"ashdausdghjagdyjhasydas")
             # cv_img = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
-            cv_img = self.bridge.compressed_imgmsg_to_cv2(msg, desired_encoding='bgr8')
+            cv_img = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
             resized = cv2.resize(cv_img, (320, 240))
             hsv     = cv2.cvtColor(resized, cv2.COLOR_BGR2HSV)
             # mask = cv2.inRange(hsv, self.lower, self.upper)
