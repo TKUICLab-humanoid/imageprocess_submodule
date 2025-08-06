@@ -73,6 +73,7 @@ class ImageSubscriber(Node):
             10,
         )
         self.subscription
+        self.zoom_in = self.create_publisher(Image, 'zoom_in', 10)
         self.processed_image = self.create_publisher(Image, 'processed_image', 10)
         self.build_image = self.create_publisher(Image, 'build_image', 10)
         self.mask_pub = self.create_publisher(Image, 'mask_image', 10)
@@ -81,6 +82,9 @@ class ImageSubscriber(Node):
         # ############################  location  ##############################
         self.declare_parameter('location', 'ar')
         loc = self.get_parameter('location').value
+        self.declare_parameter('zoom_in', 1.0)
+        self.zoomin = self.get_parameter('zoom_in').get_parameter_value().double_value  
+
         self.location_callback(loc)  # 初始化時讀取 location
         # self.location_subscription = self.create_subscription(
         #     Location,
@@ -132,7 +136,7 @@ class ImageSubscriber(Node):
         self.check_image_source = False
         self.resized_image = None
         self.location = ""
-
+        # self.zoom_factor = 4
     def location_callback(self, loc):
         """讀取 location，並初始化 HSVColorRange"""
         print(f"Received location: {loc}")
@@ -223,8 +227,23 @@ class ImageSubscriber(Node):
             # self.get_logger().info(f"ashdausdghjagdyjhasydas")
             # cv_img = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
             cv_img = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
-            resized = cv2.resize(cv_img, (320, 240))
-            hsv     = cv2.cvtColor(resized, cv2.COLOR_BGR2HSV)
+            height, width = cv_img.shape[:2]
+
+            # 計算放大後的裁切範圍（中央區域）
+            new_w = int(width / self.zoomin)
+            new_h = int(height / self.zoomin)
+            x1 = (width - new_w) // 2
+            y1 = (height - new_h) // 2
+            x2 = x1 + new_w
+            y2 = y1 + new_h
+
+            # 裁切中央區域並放大回原始大小
+            cropped = cv_img[y1:y2, x1:x2]
+            zoomed_frame = cv2.resize(cropped, (width, height), interpolation=cv2.INTER_LINEAR)
+            zoomin_image = self.bridge.cv2_to_imgmsg(zoomed_frame, encoding='bgr8')
+            self.zoom_in.publish(zoomin_image)
+            # resized = cv2.resize(cv_img, (320, 240))
+            hsv     = cv2.cvtColor(zoomed_frame, cv2.COLOR_BGR2HSV)
             # mask = cv2.inRange(hsv, self.lower, self.upper)
             # color_img = cv2.bitwise_and(resized, resized, mask=mask)
 
@@ -234,8 +253,8 @@ class ImageSubscriber(Node):
             if self.lower is None or self.upper is None:
                 return
             else:
-                self.build_hsv_table(hsv, resized)
-                self.build_all_hsv_table(hsv, resized)
+                self.build_hsv_table(hsv, zoomed_frame)
+                self.build_all_hsv_table(hsv, zoomed_frame)
             #     # self.processed_image.publish(mask_msg)
             #     # self.build_image.publish(mask_all)
         except Exception as e:
