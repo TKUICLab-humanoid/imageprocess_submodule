@@ -518,29 +518,11 @@ class ImageSubscriber(Node):
 
 
 ##############################################################################################################
-
 def main(args=None):
     rclpy.init(args=args)
     image_subscriber = ImageSubscriber()
     try:
-        while rclpy.ok():
-            rclpy.spin(image_subscriber)
-            # if image_subscriber.check_image_source:
-                # 獲取縮放影像並分類
-                # colormodel = image_subscriber.resized_image.copy()
-                # result_image, label_model = image_subscriber.ChangeToColorModel(colormodel)
-                # 顯示分類後的影像
-                # cv2.imshow("Processed Image", result_image)
-                # 發佈分類後的影像
-                # ros_image_msg = image_subscriber.bridge.cv2_to_imgmsg(image_subscriber.cv_image, encoding='bgr8')
-                # image_subscriber.publisher.publish(ros_image_msg)
-            # self.build_image.publish(self.bridge.cv2_to_imgmsg(self.result_image, encoding='bgr8'))
-            # image_subscriber.build_image.publish(image_subscriber.bridge.cv2_to_imgmsg(image_subscriber.result_image, encoding='bgr8'))
-            # image_subscriber.color_modeling(image_subscriber.build_imageprocess, image_subscriber.HSVColorRange)
-            # image_subscriber.check_image_source = False
+        rclpy.spin(image_subscriber)        # ← 單次呼叫，會一直執行 callback
     finally:
         image_subscriber.destroy_node()
         rclpy.shutdown()
-
-if __name__ == '__main__':
-    main()
