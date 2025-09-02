@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 import colorsys
 import json
 
-from std_msgs.msg import String,UInt8MultiArray,MultiArrayDimension
+from std_msgs.msg import String,UInt8MultiArray,MultiArrayDimension,Int16
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 
 # 定義顏色範圍的資料類別
@@ -56,11 +56,11 @@ class ImageSubscriber(Node):
             "OthersLabel":  {"label": 8, "color": [255,   0, 128]},   # 紫粉
         }
 
-        # 顏色參數表（保留原名）
+        # 顏色參數表
         self.HSVColorRange = {label: ColorRange(LabelName=label) for label in self.labels}
 
         # -----------------------------
-        # QoS（集中管理）
+        # QoS
         # -----------------------------
         # 只保留最新一筆；若要晚加入者可拿到上一筆，把 durability 改成 TRANSIENT_LOCAL
         qos_latest = QoSProfile(
@@ -71,7 +71,7 @@ class ImageSubscriber(Node):
         qos_img = 10  # 依你原本設定，影像 topic 用 depth=10
 
         # -----------------------------
-        # Publisher / Subscriber（保留原名）
+        # Publisher / Subscriber
         # -----------------------------
         # Publisher: 全色總表（JSON）
         self.info_pub = self.create_publisher(String, 'object_info', qos_latest)
@@ -91,8 +91,9 @@ class ImageSubscriber(Node):
         self.build_image = self.create_publisher(Image, 'build_image', qos_img)
         self.mask_pub = self.create_publisher(Image, 'mask_image', qos_img)
 
-        # color label（保留原名）
-        self.label_pub = self.create_publisher(UInt8MultiArray, 'label_matrix', qos_img)
+        # color label（保留原名）— 改用 Image (mono8) 發 total_mask
+        # self.label_pub = self.create_publisher(UInt8MultiArray, 'label_matrix', qos_img)
+        self.label_pub = self.create_publisher(Image, 'label_matrix', 10)
 
         # color model HSV（保留原名）
         self.color_model_HSV = self.create_subscription(
@@ -104,7 +105,11 @@ class ImageSubscriber(Node):
         self.draw_sub = self.create_subscription(
             DrawImage, '/drawimage', self.draw_image_callback, qos_img
         )
-
+        self.build_status_sub = self.create_subscription(
+            Int16, '/BuildStatus', self.build_status_callback, 10
+        )
+        self.build_status = 0
+        self.select_color = "red"
         # -----------------------------
         # Services（保留原名）
         # -----------------------------
@@ -135,9 +140,29 @@ class ImageSubscriber(Node):
         self.resized_image = None
         self.location = ""  # 若你的其他程式需要此欄位，先保留
 
+        # ===== 形態學 kernel（一次建好）=====
+        self.kernel3 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+
+        # ===== JSON 類 Topic 的「節流 + 去抖」狀態 =====
+        # 最快 20Hz；想更省可以把 0.05 改大（例如 0.1 = 10Hz）
+        self._pub_period = 0.05  # 秒
+        # 每個顏色一個時間戳 + 總表一個
+        self._last_pub_t = {"info": 0.0, **{f"det_{l}": 0.0 for l in self.labels}}
+        # 每個顏色上一份 payload（字串）—用來判斷「內容是否有變化」
+        self._last_payload = {l: "" for l in self.labels}
+        # 總表上一份 payload（字串）
+        self._last_info_payload = ""
+
+        # （可選）影像類 Topic 也做節流：build_image / mask_image / zoom_in
+        self._img_period = 0.001  # 秒，100Hz
+        self._last_img_pub = {"build_image": 0.0, "mask_image": 0.0, "zoom_in": 0.0}
+
         self.get_logger().info('image_subscriber initialized ✅')
 
 
+    def build_status_callback(self, msg):
+        print("BuildStatus:", msg.data)
+        self.build_status = msg.data
     # -------------------------------------------------
     # 參數動態更新 callback（新增的私有方法）
     # -------------------------------------------------
@@ -232,13 +257,13 @@ class ImageSubscriber(Node):
         self.upper = np.array([msg.hmax, msg.smax, msg.vmax], dtype=np.uint8)
 
 
-    # def image_callback(self, msg: Image):
     def image_callback(self, msg):
         try:
+            # 1) ROS Image → OpenCV
             cv_img = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
             height, width = cv_img.shape[:2]
 
-            # 中央放大
+            # 2) 中央放大（保持你原本 zoom 行為）
             new_w = int(width / self.zoomin)
             new_h = int(height / self.zoomin)
             x1 = (width - new_w) // 2
@@ -248,46 +273,69 @@ class ImageSubscriber(Node):
 
             cropped = cv_img[y1:y2, x1:x2]
             zoomed_frame = cv2.resize(cropped, (width, height), interpolation=cv2.INTER_LINEAR)
-            self.zoom_in.publish(self.bridge.cv2_to_imgmsg(zoomed_frame, encoding='bgr8'))
 
-            hsv = cv2.cvtColor(zoomed_frame, cv2.COLOR_BGR2HSV)
+            # zoom_in 影像做節流（避免每幀都發）
+            now = time.time()
+            if now - self._last_img_pub["zoom_in"] >= self._img_period:
+                zoom_msg = self.bridge.cv2_to_imgmsg(zoomed_frame, encoding='bgr8')
+                try:
+                    zoom_msg.header.stamp.sec = int(msg.header.stamp.sec)
+                    zoom_msg.header.stamp.nanosec = int(msg.header.stamp.nanosec)
+                except Exception:
+                    pass
+                self.zoom_in.publish(zoom_msg)
+                self._last_img_pub["zoom_in"] = now
 
-            if self.lower is None or self.upper is None:
-                return
+            # 3) 低解析度處理（大幅省 CPU）：在小圖上做 HSV/inRange/CCWS
+            proc_w, proc_h = 320, 240
+            proc_frame = cv2.resize(zoomed_frame, (proc_w, proc_h), interpolation=cv2.INTER_LINEAR)
+            hsv_proc = cv2.cvtColor(proc_frame, cv2.COLOR_BGR2HSV)
 
-            # 原本單色 build（可留）
-            self.build_hsv_table(hsv, zoomed_frame)
-
-            # 取用影像 header 的時間戳，丟給每色 topic
-            stamp = {'sec': msg.header.stamp.sec, 'nanosec': msg.header.stamp.nanosec}
-            self.build_all_hsv_table(hsv, zoomed_frame, stamp)
+            if self.build_status == 1:
+                # 4) 單色 build（僅在 lower/upper 已設定時跑；保持你原本邏輯）
+                if self.lower is not None and self.upper is not None:
+                    self.build_hsv_table(hsv_proc, proc_frame)
+            elif self.build_status == 0:
+                # 5) 取 header 時間戳，丟給多色偵測（節流＋去抖在函式內處理）
+                stamp = {'sec': msg.header.stamp.sec, 'nanosec': msg.header.stamp.nanosec}
+                self.build_all_hsv_table(hsv_proc, proc_frame, stamp)
 
         except Exception as e:
             self.get_logger().error(f"Failed to process image: {e}")
 
 
-    def build_hsv_table(self, hsv, resized):
-        h_low, s_low, v_low = self.lower
-        h_high, s_high, v_high = self.upper
-        if h_low <= h_high:
-            mask = cv2.inRange(
-                hsv,
-                (int(h_low), int(s_low), int(v_low)),
-                (int(h_high), int(s_high), int(v_high))
-            )
-        else:
-            mask1 = cv2.inRange(
-                hsv, (0, int(s_low), int(v_low)),
-                (int(h_high), int(s_high), int(v_high))
-            )
-            mask2 = cv2.inRange(
-                hsv, (int(h_low), int(s_low), int(v_low)),
-                (179, int(s_high), int(v_high))
-            )
-            mask = cv2.bitwise_or(mask1, mask2)
 
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN,  kernel, iterations=2)
+    def build_hsv_table(self, hsv, resized):
+        H_MAX, S_MAX, V_MAX = 179, 255, 255
+
+        h_low, s_low, v_low = map(int, self.lower)
+        h_high, s_high, v_high = map(int, self.upper)
+
+        # --- 特殊情況：全0 → 空選取；全滿 → 全選取 ---
+        if (h_low, s_low, v_low) == (0, 0, 0) and (h_high, s_high, v_high) == (0, 0, 0):
+            mask = np.zeros(hsv.shape[:2], dtype=np.uint8)
+        elif (h_low, s_low, v_low) == (0, 0, 0) and (h_high, s_high, v_high) == (H_MAX, S_MAX, V_MAX):
+            mask = np.full(hsv.shape[:2], 255, dtype=np.uint8)
+        elif (h_low, s_low, v_low) == (H_MAX, S_MAX, V_MAX) and (h_high, s_high, v_high) == (H_MAX, S_MAX, V_MAX):
+            # 兼容：若上下限都被拉到最大，也視為全選
+            mask = np.full(hsv.shape[:2], 255, dtype=np.uint8)
+        else:
+            # --- 一般情況：沿用你原本的區間與跨零點邏輯 ---
+            if h_low <= h_high:
+                mask = cv2.inRange(
+                    hsv,
+                    (h_low, s_low, v_low),
+                    (h_high, s_high, v_high)
+                )
+            else:
+                mask1 = cv2.inRange(hsv, (0, s_low, v_low), (h_high, s_high, v_high))
+                mask2 = cv2.inRange(hsv, (h_low, s_low, v_low), (H_MAX, s_high, v_high))
+                mask = cv2.bitwise_or(mask1, mask2)
+
+            # 形態學清雜訊（只在一般情況下做，避免把「全選」變稀疏）
+            mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, self.kernel3, iterations=2)
+
+        # 後處理與發佈：保持你原本的流程
         mask_msg = self.bridge.cv2_to_imgmsg(mask, encoding='mono8')
 
         key = f"{self.select_color.capitalize()}Label"
@@ -295,102 +343,136 @@ class ImageSubscriber(Node):
             b, g, r = self.color_labels[key]['color']
             color_img = np.zeros_like(resized)
             color_img[:] = (b, g, r)
-            colored_mask = cv2.bitwise_and(color_img, color_img, mask=mask)
-            color_msg = self.bridge.cv2_to_imgmsg(colored_mask, encoding='bgr8')
+
+            fg = cv2.bitwise_and(color_img, color_img, mask=mask)
+            inv = cv2.bitwise_not(mask)
+            bg = cv2.bitwise_and(resized, resized, mask=inv)
+            composed = cv2.add(bg, fg)
+
+            color_msg = self.bridge.cv2_to_imgmsg(composed, encoding='bgr8')
             self.processed_image.publish(color_msg)
+        else:
+            self.processed_image.publish(self.bridge.cv2_to_imgmsg(resized, encoding='bgr8'))
 
         vis_msg = self.bridge.cv2_to_imgmsg(resized, encoding='bgr8')
         return vis_msg, mask_msg
 
+
+
     def build_all_hsv_table(self, hsv, resized, stamp):
+        """
+        根據 self.HSVColorRange 對每個顏色做 inRange + 形態學清理，
+        輸出：
+        - /detections/<label>   ：各色精簡 JSON（節流+去抖）
+        - /object_info          ：全部顏色的精簡 JSON（節流+去抖）
+        - /label_matrix (Image) ：mono8 的 total_mask（影像節流）
+        - /build_image (Image)  ：彩色可視化（影像節流）
+        參數:
+        hsv     : HSV 影像 (H:0~179, S/V:0~255)
+        resized : 對應 BGR 影像（用於可視化上色；保留你的變數名稱）
+        stamp   : {'sec': int, 'nanosec': int}
+        """
         h, w = hsv.shape[:2]
-        total_mask = np.zeros((h, w), dtype=np.uint8)       # 純黑白二值化
-        color_mask = np.zeros((h, w, 3), dtype=np.uint8)    # BGR 彩色輸出
+        total_mask = np.zeros((h, w), dtype=np.uint8)     # 純黑白二值化
+        color_mask = np.zeros((h, w, 3), dtype=np.uint8)  # BGR 偽彩色輸出
 
-        # 總表（我改成精簡欄位，避免太肥）
-        detections_all = { label: [] for label in self.HSVColorRange.keys() }
+        # 全色偵測結果（精簡）
+        detections_all = {label: [] for label in self.HSVColorRange.keys()}
 
-        # 針對每個顏色做 inRange、形態學處理並累積到 total_mask
+        # === 逐色門檻 + 形態學 + 蒐集結果 ===
         for label, color_obj in self.HSVColorRange.items():
             h_low, h_high = int(color_obj.HueMin), int(color_obj.HueMax)
             s_low, s_high = int(color_obj.SaturationMin), int(color_obj.SaturationMax)
             v_low, v_high = int(color_obj.BrightnessMin), int(color_obj.BrightnessMax)
-            if (h_low, h_high, s_low, s_high, v_low, v_high) == (0,0,0,0,0,0):
-                # 空設定就跳過
+
+            # 空設定直接跳過
+            if (h_low, h_high, s_low, s_high, v_low, v_high) == (0, 0, 0, 0, 0, 0):
                 continue
 
-            # 切分跨過 0 度的情況
+            # Hue 跨 0 度處理
             if h_low <= h_high:
                 mask_i = cv2.inRange(hsv, (h_low, s_low, v_low), (h_high, s_high, v_high))
             else:
-                m1 = cv2.inRange(hsv, (0, s_low, v_low), (h_high, s_high, v_high))
-                m2 = cv2.inRange(hsv, (h_low, s_low, v_low), (179, s_high, v_high))
+                m1 = cv2.inRange(hsv, (0,   s_low, v_low), (h_high, s_high, v_high))
+                m2 = cv2.inRange(hsv, (h_low, s_low, v_low), (179,    s_high, v_high))
                 mask_i = cv2.bitwise_or(m1, m2)
 
-            # 開運算去雜訊
-            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-            mask_i = cv2.morphologyEx(mask_i, cv2.MORPH_OPEN, kernel, iterations=2)
+            # 形態學開運算去雜訊（只建一次的 kernel：self.kernel3）
+            mask_i = cv2.morphologyEx(mask_i, cv2.MORPH_OPEN, self.kernel3, iterations=2)
+
+            # 累積總 mask（用清理後的 mask_i）
             total_mask = cv2.bitwise_or(total_mask, mask_i)
 
-            # 對應偽彩色
+            # 偽彩色（用清理後的 mask_i）
             label_key = label.capitalize() + "Label"
-            bgr_color = np.array(self.color_labels.get(label_key, {"color":[255,255,255]})["color"], dtype=np.uint8)
+            bgr_color = np.array(self.color_labels.get(label_key, {"color": [255, 255, 255]})["color"],
+                                dtype=np.uint8)
             color_mask[mask_i > 0] = bgr_color
 
-            # 找輪廓並記錄偵測結果
-            contours, _ = cv2.findContours(mask_i, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-            # 這一色的精簡清單（高頻 topic 用）
+            # ====== 連通元件（比 findContours 更省） ======
+            num, labels_cc, stats, centroids = cv2.connectedComponentsWithStats(mask_i, connectivity=8)
             color_list_compact = []
-
-            for cnt in contours:
-                area = cv2.contourArea(cnt)
+            for i in range(1, num):  # 0 是背景
+                x, y, w_box, h_box, area = stats[i]
                 if area < 50:
                     continue
-                x, y, w_box, h_box = cv2.boundingRect(cnt)
-                M = cv2.moments(cnt)
-                if M["m00"] != 0:
-                    cx = int(M["m10"]/M["m00"]); cy = int(M["m01"]/M["m00"])
-                else:
-                    cx, cy = x + w_box//2, y + h_box//2
-
+                cx, cy = centroids[i]
                 item = {
-                    "bbox": (x, y, w_box, h_box),
-                    "centroid": (cx, cy),
+                    "bbox": (int(x), int(y), int(w_box), int(h_box)),
+                    "centroid": (int(cx), int(cy)),
                     "area": float(area),
-                    "aspect_ratio": w_box / h_box if h_box>0 else 0,
+                    "aspect_ratio": float(w_box) / float(h_box) if h_box > 0 else 0.0,
                     "label": label
                 }
                 color_list_compact.append(item)
                 detections_all[label].append(item)
 
-            # 🆕 每個顏色各自 publish 一則：/detections/<label>
+            # ====== 每色各發一則 JSON（節流 + 去抖） ======
             msg_color = {
                 "stamp": stamp,
                 "width": w, "height": h,
                 "label": label,
                 "objects": color_list_compact
             }
-            try:
-                self.det_pubs[label].publish(String(data=json.dumps(msg_color)))
-            except Exception as e:
-                self.get_logger().warning(f"publish detections/{label} failed: {e}")
+            payload = json.dumps(msg_color, separators=(',', ':'))
+            now = time.time()
+            key = f"det_{label}"
+            if payload != self._last_payload[label] and (now - self._last_pub_t[key] >= self._pub_period):
+                try:
+                    self.det_pubs[label].publish(String(data=payload))
+                    self._last_payload[label] = payload
+                    self._last_pub_t[key] = now
+                except Exception as e:
+                    self.get_logger().warning(f"publish detections/{label} failed: {e}")
 
-        # ---- 發佈總表 object_info（精簡版）----
+        # === 發佈總表 object_info（節流 + 去抖） ===
         detections_all["_stamp"] = stamp
-        self.info_pub.publish(String(data=json.dumps(detections_all)))
+        payload_all = json.dumps(detections_all, separators=(',', ':'))
+        now = time.time()
+        if payload_all != self._last_info_payload and (now - self._last_pub_t["info"] >= self._pub_period):
+            try:
+                self.info_pub.publish(String(data=payload_all))
+                self._last_info_payload = payload_all
+                self._last_pub_t["info"] = now
+            except Exception as e:
+                self.get_logger().warning(f"publish object_info failed: {e}")
 
-        # ---- publish total_mask 二維矩陣 ----
-        mat_msg = UInt8MultiArray()
-        mat_msg.layout.dim.append(MultiArrayDimension(label='rows', size=h, stride=h*w))
-        mat_msg.layout.dim.append(MultiArrayDimension(label='cols', size=w, stride=w))
-        mat_msg.data = total_mask.flatten().tolist()
-        self.label_pub.publish(mat_msg)
+        # === 發佈 total_mask 為 mono8 Image（影像節流） ===
+        img_msg = self.bridge.cv2_to_imgmsg(total_mask, encoding='mono8')
+        try:
+            img_msg.header.stamp.sec = int(stamp.get('sec', 0))
+            img_msg.header.stamp.nanosec = int(stamp.get('nanosec', 0))
+        except Exception:
+            pass
+        now = time.time()
+        if now - self._last_img_pub["mask_image"] >= self._img_period:
+            self.label_pub.publish(img_msg)
+            self._last_img_pub["mask_image"] = now
 
-        # ---- 原有的影像可視化發佈 ----
+        # === 彩色可視化影像（把 color_mask 套 total_mask，影像節流） ===
         vis_all = cv2.bitwise_and(color_mask, color_mask, mask=total_mask)
 
-        # 畫圖請求
+        # 畫外部請求（line/rect）
         if self.draw_requests:
             for req in self.draw_requests:
                 color = (int(req['b']), int(req['g']), int(req['r']))
@@ -403,7 +485,17 @@ class ImageSubscriber(Node):
             self.draw_requests.clear()
 
         vis_msg_all = self.bridge.cv2_to_imgmsg(vis_all, encoding='bgr8')
-        self.build_image.publish(vis_msg_all)
+        try:
+            vis_msg_all.header.stamp.sec = int(stamp.get('sec', 0))
+            vis_msg_all.header.stamp.nanosec = int(stamp.get('nanosec', 0))
+        except Exception:
+            pass
+        now = time.time()
+        if now - self._last_img_pub["build_image"] >= self._img_period:
+            self.processed_image.publish(vis_msg_all)
+            self._last_img_pub["build_image"] = now
+
+
         
     def draw_image_callback(self, msg):
         self.draw_requests.append({
